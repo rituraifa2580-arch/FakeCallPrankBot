@@ -1,81 +1,78 @@
 import os
-import time
-import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import tempfile
+import asyncio
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
-    CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
+    filters,
 )
+import yt_dlp
 
-logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("BOT_TOKEN")
-last_call = {}
+
+WELCOME = """
+🌙 Welcome to Soul Downloader!
+
+TikTok | Facebook | YouTube
+
+একটি অনুমোদিত ভিডিও লিংক পাঠাও।
+"""
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📞 Welcome to Fake Call Prank Bot!\n\n"
-        "আমাকে দিয়ে মজার Fake Call Prank করতে পারো।\n\n"
-        "/call - Fake incoming call\n"
-        "/help - Help"
-    )
+    await update.message.reply_text(WELCOME)
 
-async def call(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    now = time.time()
+async def download(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
 
-    if now - last_call.get(user_id, 0) < 15:
-        await update.message.reply_text("⏳ একটু অপেক্ষা করো!")
+    if not url.startswith(("https://", "http://")):
+        await update.message.reply_text("সঠিক লিংক পাঠাও।")
         return
 
-    last_call[user_id] = now
-    caller = " ".join(context.args) or "Unknown Caller"
+    status = await update.message.reply_text("⏳ লিংক পরীক্ষা করছি...")
 
-    keyboard = [
-        [
-            InlineKeyboardButton("📞 Answer", callback_data="answer"),
-            InlineKeyboardButton("❌ Decline", callback_data="decline"),
-        ]
-    ]
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            options = {
+                "format": "best[ext=mp4]/best",
+                "outtmpl": f"{folder}/video.%(ext)s",
+                "noplaylist": True,
+                "max_filesize": 49 * 1024 * 1024,
+                "quiet": True,
+            }
 
-    await update.message.reply_text(
-        f"📲 INCOMING CALL — PRANK SIMULATION\n\n"
-        f"👤 Caller: {caller}\n"
-        f"🔔 Ring Ring... Ring Ring...\n\n"
-        f"এটি শুধু Telegram-এর মজার Simulation!",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+            def get_video():
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    return ydl.prepare_filename(info)
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+            path = await asyncio.to_thread(get_video)
 
-    if query.data == "answer":
-        message = "😂 হ্যালো! এটা একটা প্র্যাঙ্ক কল!"
-    else:
-        message = "📵 তুমি কলটি কেটে দিয়েছ!"
+            if not os.path.exists(path):
+                raise Exception("ভিডিও পাওয়া যায়নি।")
 
-    await query.edit_message_text(message)
+            await status.edit_text("📤 Telegram-এ পাঠাচ্ছি...")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📞 Fake Call Prank Bot\n\n"
-        "/start - Start bot\n"
-        "/call - Make a fake call\n"
-        "/call Friend - Caller name সহ prank"
-    )
+            with open(path, "rb") as video:
+                await update.message.reply_video(
+                    video=video,
+                    caption="🌙 Soul Downloader"
+                )
+
+            await status.delete()
+
+    except Exception:
+        await status.edit_text(
+            "❌ ডাউনলোড করা যায়নি। লিংকটি পরীক্ষা করো "
+            "অথবা সাইটটি ডাউনলোড অনুমোদন করে কি না দেখো।"
+        )
 
 def main():
-    if not TOKEN:
-        raise RuntimeError("BOT_TOKEN সেট করা নেই!")
-
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("call", call))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CallbackQueryHandler(buttons))
-    print("Bot is running...")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download))
     app.run_polling()
 
 if __name__ == "__main__":
